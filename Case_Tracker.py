@@ -206,7 +206,29 @@ class CaseTracker(QWidget):
     # ---------------- BUTTONS ----------------
 
     def calibrate_ocr(self):
-        self.status_label.setText("Status: Calibration not implemented yet")
+        self.hide()
+
+        self.overlay = ScreenSelector()
+
+        self.calibration_data = {}
+
+        def handle_selection(step, region):
+            self.calibration_data[step] = region
+
+            if step == "inventory":
+                self.overlay = ScreenSelector()
+                self.overlay.step = "cash"
+                self.overlay.callback = handle_selection
+            else:
+                self.config["inventory_region"] = self.calibration_data["inventory"]
+                self.config["cash_region"] = self.calibration_data["cash"]
+
+                self.save_config()
+
+                self.status_label.setText("Calibration Saved")
+                self.show()
+
+        self.overlay.callback = handle_selection
 
     def test_ocr(self):
         inv = self.config.get("inventory_region")
