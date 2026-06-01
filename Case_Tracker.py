@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QLineEdit,
 )
+from PyQt6.QtGui import QGuiApplication, QPainter, QColor, QPen
+from PyQt6.QtCore import QRect, QPoint
 
 class CaseTracker(QWidget):
     def __init__(self):
