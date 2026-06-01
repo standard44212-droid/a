@@ -1,6 +1,7 @@
 import sys
 import json
 import os
+import re
 
 import easyocr
 import mss
@@ -12,15 +13,29 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
-    QLineEdit,
+    QLineEdit
 )
-from PyQt6.QtGui import QGuiApplication, QPainter, QColor, QPen
-from PyQt6.QtCore import QRect, QPoint, Qt
+
+from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtCore import Qt, QRect, QPoint, QTimer
+
+import keyboard
 
 
+# =========================
+# OVERLAY SELECTOR
+# =========================
 class ScreenSelector(QWidget):
-    def __init__(self):
+    def __init__(self, callback):
         super().__init__()
+
+        self.callback = callback
+        self.step = "inventory"
+        self.last_spin_value = None
+        self.spin_pending = False
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_values)
+        self.timer.start(2000)  # every 2 seconds
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -29,15 +44,11 @@ class ScreenSelector(QWidget):
         )
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
         self.showFullScreen()
 
         self.start_point = QPoint()
         self.end_point = QPoint()
         self.selecting = False
-
-        self.step = "inventory"
-        self.callback = None
 
     def mousePressEvent(self, event):
         self.start_point = event.pos()
@@ -54,31 +65,30 @@ class ScreenSelector(QWidget):
 
         rect = QRect(self.start_point, self.end_point).normalized()
 
-        result = {
+        region = {
             "left": rect.left(),
             "top": rect.top(),
             "width": rect.width(),
             "height": rect.height()
         }
 
-        self.callback(self.step, result)
+        self.callback(self.step, region)
         self.close()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # dark overlay (but transparent)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
 
         if self.selecting:
             pen = QPen(QColor(0, 255, 0), 2)
             painter.setPen(pen)
-
-            rect = QRect(self.start_point, self.end_point)
-            painter.drawRect(rect)
+            painter.drawRect(QRect(self.start_point, self.end_point))
 
 
+# =========================
+# MAIN APP
+# =========================
 class CaseTracker(QWidget):
     def __init__(self):
         super().__init__()
@@ -88,8 +98,15 @@ class CaseTracker(QWidget):
 
         self.reader = easyocr.Reader(['en'], gpu=False)
 
+        # session data
+        self.session_active = False
+        self.start_net = 0
+        self.current_net = 0
+        self.rolls = 0
+        self.last_spin_value = None
+
         self.setWindowTitle("Case Tracker")
-        self.setGeometry(100, 100, 500, 550)
+        self.setGeometry(100, 100, 500, 600)
 
         self.setStyleSheet("""
             QWidget {
@@ -115,7 +132,7 @@ class CaseTracker(QWidget):
         layout = QVBoxLayout()
 
         self.case_cost = QLineEdit()
-        self.case_cost.setPlaceholderText("Cost Per 5 Cases")
+        self.case_cost.setPlaceholderText("Cost per 5 cases")
 
         self.start_button = QPushButton("Start Session")
         self.stop_button = QPushButton("Stop Session")
@@ -126,11 +143,8 @@ class CaseTracker(QWidget):
         self.status_label = QLabel("Status: Waiting")
         self.rolls_label = QLabel("Rolls: 0")
 
-        self.last_roll_label = QLabel("Last Roll: $0.00")
         self.session_label = QLabel("Session P/L: $0.00")
-
-        self.starting_label = QLabel("Starting Net Worth: $0.00")
-        self.current_label = QLabel("Current Net Worth: $0.00")
+        self.net_label = QLabel("Net Worth: $0.00")
 
         layout.addWidget(self.case_cost)
 
@@ -141,123 +155,189 @@ class CaseTracker(QWidget):
         layout.addWidget(self.calibrate_button)
         layout.addWidget(self.test_ocr_button)
 
-        layout.addSpacing(15)
+        layout.addSpacing(10)
 
         layout.addWidget(self.status_label)
         layout.addWidget(self.rolls_label)
-
-        layout.addSpacing(15)
-
-        layout.addWidget(self.last_roll_label)
+        layout.addWidget(self.net_label)
         layout.addWidget(self.session_label)
-
-        layout.addSpacing(15)
-
-        layout.addWidget(self.starting_label)
-        layout.addWidget(self.current_label)
-
-        self.calibrate_button.clicked.connect(self.calibrate_ocr)
-        self.test_ocr_button.clicked.connect(self.test_ocr)
 
         self.setLayout(layout)
 
-    # ---------------- CONFIG ----------------
+        # buttons
+        self.start_button.clicked.connect(self.start_session)
+        self.stop_button.clicked.connect(self.stop_session)
+        self.reset_button.clicked.connect(self.reset_session)
+        self.calibrate_button.clicked.connect(self.calibrate_ocr)
+        self.test_ocr_button.clicked.connect(self.update_values)
 
+        # R key hook
+        keyboard.on_press_key("r", self.on_roll)
+
+        # live update timer
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_values)
+        self.timer.start(3000)
+
+    # =========================
+    # CONFIG
+    # =========================
     def load_config(self):
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, "r") as f:
                     self.config = json.load(f)
             except:
-                self.config = {
-                    "inventory_region": None,
-                    "cash_region": None
-                }
+                self.config = {}
         else:
-            self.config = {
-                "inventory_region": None,
-                "cash_region": None
-            }
+            self.config = {}
 
     def save_config(self):
         with open(self.config_file, "w") as f:
             json.dump(self.config, f, indent=4)
 
-    # ---------------- OCR CORE ----------------
-
-    def capture_region(self, region):
+    # =========================
+    # OCR
+    # =========================
+    def capture(self, region):
         with mss.mss() as sct:
             img = np.array(sct.grab(region))
         return img
 
-    def read_region(self, region):
-        img = self.capture_region(region)
+    def read(self, region):
+        img = self.capture(region)
 
-        results = self.reader.readtext(
+        text = self.reader.readtext(
             img,
             detail=0,
-            paragraph=False,
             allowlist="0123456789,.$"
         )
 
-        if not results:
-            return "NO TEXT"
+        if not text:
+            return 0.0
 
-        print("OCR RESULTS:", results)
-        return " ".join(results)
+        raw = "".join(text)
+        nums = re.findall(r"[\d,]+\.\d+", raw)
 
-    # ---------------- BUTTONS ----------------
+        if not nums:
+            return 0.0
 
-    def calibrate_ocr(self):
-        self.hide()
+        return float(nums[0].replace(",", ""))
 
-        self.overlay = ScreenSelector()
+    # =========================
+    # SESSION LOGIC
+    # =========================
+    def start_session(self):
+        self.session_active = True
+        self.rolls = 0
+        self.start_net = self.current_net
+        self.status_label.setText("Session Started")
 
-        self.calibration_data = {}
+    def stop_session(self):
+        self.session_active = False
+        self.status_label.setText("Session Stopped")
 
-        def handle_selection(step, region):
-            self.calibration_data[step] = region
+    def reset_session(self):
+        self.start_net = 0
+        self.current_net = 0
+        self.rolls = 0
+        self.last_spin_value = None
+        self.rolls_label.setText("Rolls: 0")
+        self.session_label.setText("Session P/L: $0.00")
+        self.status_label.setText("Session Reset")
+        self.update_values()
 
-            if step == "inventory":
-                self.overlay = ScreenSelector()
-                self.overlay.step = "cash"
-                self.overlay.callback = handle_selection
-            else:
-                self.config["inventory_region"] = self.calibration_data["inventory"]
-                self.config["cash_region"] = self.calibration_data["cash"]
-
-                self.save_config()
-
-                self.status_label.setText("Calibration Saved")
-                self.show()
-
-        self.overlay.callback = handle_selection
-
-    def test_ocr(self):
-        inv = self.config.get("inventory_region")
-        cash = self.config.get("cash_region")
-
-        if not inv or not cash:
-            self.status_label.setText("Status: Configure OCR regions first")
+    def on_roll(self, _):
+        if not self.session_active:
             return
 
         try:
-            inv_text = self.read_region(inv)
-            cash_text = self.read_region(cash)
+            cost = float(self.case_cost.text() or 0)
+        except:
+            cost = 0
 
-            print("Inventory OCR:", inv_text)
-            print("Cash OCR:", cash_text)
+        # snapshot BEFORE spin
+        self.last_spin_value = self.current_net
 
-            self.status_label.setText(
-                f"Inventory: {inv_text} | Cash: {cash_text}"
-            )
+        self.start_net -= cost
+        self.rolls += 1
+        self.rolls_label.setText(f"Rolls: {self.rolls}")
 
-        except Exception as e:
-            self.status_label.setText(f"OCR Error: {str(e)}")
+        self.status_label.setText("Spin detected... waiting result")
+
+        # delay so OCR catches AFTER spin
+        QTimer.singleShot(4000, self.finalize_spin)
+
+    def finalize_spin(self):
+        inv_r = self.config.get("inventory_region")
+        cash_r = self.config.get("cash_region")
+
+        if not inv_r or not cash_r:
+            return
+
+        inv = self.read(inv_r)
+        cash = self.read(cash_r)
+
+        new_net = inv + cash
+
+        if self.last_spin_value is None:
+            return
+
+        diff = new_net - self.last_spin_value
+
+        color = "green" if diff >= 0 else "red"
+
+        self.status_label.setStyleSheet(f"color: {color};")
+        self.status_label.setText(f"Spin Result: ${diff:,.2f}")
+
+    # =========================
+    # UPDATE VALUES
+    # =========================
+    def update_values(self):
+        inv_r = self.config.get("inventory_region")
+        cash_r = self.config.get("cash_region")
+
+        if not inv_r or not cash_r:
+            return
+
+        inv = self.read(inv_r)
+        cash = self.read(cash_r)
+
+        net = inv + cash
+
+        self.current_net = net
+        self.net_label.setText(f"Net Worth: ${net:,.2f}")
+
+        # live session profit (always updating)
+        if self.start_net != 0:
+            profit = net - self.start_net
+
+            color = "green" if profit >= 0 else "red"
+            self.session_label.setStyleSheet(f"color: {color};")
+            self.session_label.setText(f"Session P/L: ${profit:,.2f}")
+
+    # =========================
+    # CALIBRATION
+    # =========================
+    def calibrate_ocr(self):
+        self.selector = ScreenSelector(self.handle_select)
+        self.selector.step = "inventory"
+
+    def handle_select(self, step, region):
+        if step == "inventory":
+            self.config["inventory_region"] = region
+            self.save_config()
+
+            self.selector = ScreenSelector(self.handle_select)
+            self.selector.step = "cash"
+        else:
+            self.config["cash_region"] = region
+            self.save_config()
 
 
-# ---------------- RUN APP ----------------
-
+# =========================
+# RUN
+# =========================
 app = QApplication(sys.argv)
 window = CaseTracker()
 window.show()
