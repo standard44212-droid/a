@@ -28,18 +28,16 @@ class ScreenSelector(QWidget):
             Qt.WindowType.Tool
         )
 
-        self.setWindowState(Qt.WindowState.WindowFullScreen)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        self.setStyleSheet("background-color: rgba(0, 0, 0, 120);")
+        self.showFullScreen()
 
         self.start_point = QPoint()
         self.end_point = QPoint()
         self.selecting = False
 
-        self.step = "inventory"  # then "cash"
+        self.step = "inventory"
         self.callback = None
-
-        self.show()
 
     def mousePressEvent(self, event):
         self.start_point = event.pos()
@@ -67,8 +65,13 @@ class ScreenSelector(QWidget):
         self.close()
 
     def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # dark overlay (but transparent)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
+
         if self.selecting:
-            painter = QPainter(self)
             pen = QPen(QColor(0, 255, 0), 2)
             painter.setPen(pen)
 
