@@ -15,7 +15,65 @@ from PyQt6.QtWidgets import (
     QLineEdit,
 )
 from PyQt6.QtGui import QGuiApplication, QPainter, QColor, QPen
-from PyQt6.QtCore import QRect, QPoint
+from PyQt6.QtCore import QRect, QPoint, Qt
+
+class ScreenSelector(QWidget):
+    def __init__(self, step, callback):
+        super().__init__()
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+
+        self.setWindowState(Qt.WindowState.WindowFullScreen)
+
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 120);")
+
+        self.start_point = QPoint()
+        self.end_point = QPoint()
+        self.selecting = False
+
+        self.step = step  # "inventory" or "cash"
+        self.callback = callback
+
+        self.show()
+
+    def mousePressEvent(self, event):
+        self.start_point = event.pos()
+        self.end_point = event.pos()
+        self.selecting = True
+
+    def mouseMoveEvent(self, event):
+        self.end_point = event.pos()
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        self.end_point = event.pos()
+        self.selecting = False
+
+        rect = QRect(self.start_point, self.end_point).normalized()
+
+        result = {
+            "left": rect.left(),
+            "top": rect.top(),
+            "width": rect.width(),
+            "height": rect.height()
+        }
+
+        self.callback(self.step, result)
+        self.close()
+
+    def paintEvent(self, event):
+        if self.selecting:
+            painter = QPainter(self)
+            pen = QPen(QColor(0, 255, 0), 2)
+            painter.setPen(pen)
+
+            rect = QRect(self.start_point, self.end_point)
+            painter.drawRect(rect)
+
 
 class CaseTracker(QWidget):
     def __init__(self):
@@ -147,7 +205,18 @@ class CaseTracker(QWidget):
     # ---------------- BUTTONS ----------------
 
     def calibrate_ocr(self):
-        self.status_label.setText("Status: Calibration not implemented yet")
+        self.status_label.setText("Status: Select inventory region")
+        selector = ScreenSelector("inventory", self.on_region_selected)
+
+    def on_region_selected(self, step, region):
+        self.config[f"{step}_region"] = region
+        self.save_config()
+
+        if step == "inventory":
+            self.status_label.setText("Status: Select cash region")
+            selector = ScreenSelector("cash", self.on_region_selected)
+        else:
+            self.status_label.setText("Status: Calibration complete!")
 
     def test_ocr(self):
         inv = self.config.get("inventory_region")
