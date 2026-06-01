@@ -17,8 +17,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QGuiApplication, QPainter, QColor, QPen
 from PyQt6.QtCore import QRect, QPoint, Qt
 
+
 class ScreenSelector(QWidget):
-    def __init__(self, step, callback):
+    def __init__(self):
         super().__init__()
 
         self.setWindowFlags(
@@ -35,8 +36,8 @@ class ScreenSelector(QWidget):
         self.end_point = QPoint()
         self.selecting = False
 
-        self.step = step  # "inventory" or "cash"
-        self.callback = callback
+        self.step = "inventory"  # then "cash"
+        self.callback = None
 
         self.show()
 
@@ -205,18 +206,7 @@ class CaseTracker(QWidget):
     # ---------------- BUTTONS ----------------
 
     def calibrate_ocr(self):
-        self.status_label.setText("Status: Select inventory region")
-        selector = ScreenSelector("inventory", self.on_region_selected)
-
-    def on_region_selected(self, step, region):
-        self.config[f"{step}_region"] = region
-        self.save_config()
-
-        if step == "inventory":
-            self.status_label.setText("Status: Select cash region")
-            selector = ScreenSelector("cash", self.on_region_selected)
-        else:
-            self.status_label.setText("Status: Calibration complete!")
+        self.status_label.setText("Status: Calibration not implemented yet")
 
     def test_ocr(self):
         inv = self.config.get("inventory_region")
